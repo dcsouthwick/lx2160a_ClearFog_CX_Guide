@@ -1,7 +1,7 @@
 
 # ClearFog CX LX2160A
 
-<img src="images/casefit_small.jpg"  align="right" width="300"/>
+<img src="images/casefit_small.jpg"  align="right" width="400"/>
 
 - [ClearFog CX LX2160A](#clearfog-cx-lx2160a)
   - [Resources](#resources)
@@ -22,7 +22,7 @@
 
 ## Resources
 
-<img src="images/newboard_small.jpg"  width="300"/>  <img src="images/specs_comparison.png"  width="313"/>
+<img src="images/newboard_small.jpg"  width="400"/>  <img src="images/specs_comparison.png"  width="413"/>
 
 - [Solid-Run ClearFog CX LX2160A Quick Start Guide](https://solidrun.atlassian.net/wiki/spaces/developer/pages/197494288/HoneyComb+LX2+ClearFog+CX+LX2+Quick+Start+Guide) (sometimes outdated)
 - [SolidRun lx2160a u-boot repo](https://github.com/SolidRun/lx2160a_build) (only tested for 8_5_2)
