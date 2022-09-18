@@ -5,7 +5,7 @@
 
 - [ClearFog CX LX2160A](#clearfog-cx-lx2160a)
   - [Resources](#resources)
-    - [Notes on quickstarting](#notes-on-quickstarting)
+    - [Quickstarting](#quickstarting)
     - [Booting](#booting)
     - [Finish install](#finish-install)
     - [make dpmac auto-configure on boot](#make-dpmac-auto-configure-on-boot)
@@ -15,6 +15,7 @@
     - [Bug: Docker/make/X doesn't work](#bug-dockermakex-doesnt-work)
     - [Get IP address in u-boot](#get-ip-address-in-u-boot)
     - [notes on dtb/dts conversion & debugging with QEMU](#notes-on-dtbdts-conversion--debugging-with-qemu)
+  - [Override default SERDES configs](#override-default-serdes-configs)
   - [mITX cases](#mitx-cases)
   - [Thermal Calculations](#thermal-calculations)
 
@@ -281,6 +282,173 @@ Use dtc to compile the modified dts file to dtb file.
 Step 5:
 Load this new dtb file in Qemu.
 `qemu-system-aarch64 -dtb virt_new.dtb <followed by other options>`
+
+## Override default SERDES configs
+
+**WARNING WARNING WARNING** : Expermimental, _untested_, (mostly) undocumented!
+
+https://www.nxp.com/docs/en/application-note/AN13022.pdf 
+
+The above application note documents the steps to override a default SERDES config. I've chosen to try with overriding SERDES21 to the following:
+
+| SRDS_PRTCL_S1 |   H/0  | G/1 | F/2 | E/3 |    D/4    |   C/5   |   B/6  |   A/7   |    PLL   |
+|:-------------:|:------:|:---:|:---:|:---:|:---------:|:-------:|:------:|:-------:|:--------:|
+| 21 (starting) | 25GE.3 | "   | "   | "   | PCIe.2 x2 | "       | 25GE.9 | 25GE.10 | FFFFSSFF |
+| 31 (target)   | 25GE.3 | "   | "   | "   | SGMII.7   | SGMII.8 | 25GE.9 | 25GE.10 | FFFFSSFF |
+
+
+
+
+
+Supposedly, the override must be done at the register level, so .pbi hex segments in RCW:
+* reserved/unmapped must be read, modified, then written - which the application note ignores ?
+
+> SerDes1 base address: 0x01EA_0000
+
+> Commands must be 32bit
+
+**WARNING**: the application note (above) has a lot of bits and registers that do not appear in the technical spec for this processor. YMMV!
+
+1. Disable all PCIe
+    > PCC0 (offset 0x1080)
+    - `write 0x01EA1080, 0x00000000`
+2. Enable SGMII mode for lanes C,D
+    > PCC8 (offset 0x10A0)
+    - SGMIIC_CFG=1 enable 1G channel C
+    - SGMIID_CFG=1 enable 1G channel D
+    - `0b 0 000 0 000 0 001 0 001 0000 0000 0000 0000`
+    - `write 0x01EA10A0, 0x00110000`
+3. Enable SGMII control lanes C,D
+    > SGMIIaCR1 (offset 0x1804 + a*10h for 0-7)
+    - SGMIIcCR1 offset 1804+20 = 1824
+    - SGMIIdCR1 offset 1804+30 = 1834
+    - `write 0x1EA1824, 0x00000400`
+    - `write 0x1EA1834, 0x00000400`
+7. set PLLS ref to sgmii
+    >PLLSCR0 (offset 0x0504)
+    - `write 0x1EA0504, 0x00000000` 
+8. Config PLLS clock
+    >PLLSCR1 (offset 0x0508)
+    - SLOW_VCO_EN=1 slower VCO
+    - FRATE_SEL=00000 SGMII
+    - HI_BW_SEL=0
+    - CLKD_RCAL_SLW_EN=1 resister calib
+    - RTMR_BYP=0
+    - EX_DLY_SEL=00
+    - `write 0x1EA0508, 0x00100000`
+10. set PLLS clock for SGMII
+    > PLLSCR3 (offset 0x0510)
+    - SSC_SEL=00 non pci
+    - SSC_SLP_OFF=0 non pci
+    - Bit13=1
+    - Bit12=1
+    - `write 0x1EA0510, 0x00003000`
+11. Set PLLS clock for SGMII
+    > PLLSCR4(offset 0x0514)
+    - SSC_BIAS_BST=000 recommended
+    - SSC_SLP_OFF=0 no slope (non-pci)
+    - SSC_PI_BST=0 for SGMII
+    - SSC_SAW_MAX=0 non-pci
+    - `write 0x1EA0514, 0x00000000`
+12. change clock for transmitter
+    > LNaTGCR0 (offset 824 + a*100 for 0-7)
+    - USER_SLOW_PLL = 1 transmit uses PLLS
+    - BY_N_RATE_SEL  = 010 1G rate
+    - LNCTGCR0 offset 0A24
+    - LNDTGCR0 offset 0B24
+    - `0b 1 0 010 0 00 0 00 0 0 00000000`
+    - `write 0x1EA0A24, 0x00120000`
+    - `write 0x1EA0B24, 0x00120000`
+13. Change PLL settings for SGMII
+    > LNmRGCR0 (offset 0x0844+a*100)
+    - USE_SLOW_PLL=1
+    - BY_N_RATE_SEL=010 SGMII
+    - PRTM_VCM_SEL=00 non-pcie
+15. Change protocol to SGMII for lanes C,D, disable reset chaining
+    > LNmGCR0 (offset 0800h + a*100 for 0-7 (A-H))
+    - bit28=0
+    - PORT_LN0_B=0 single-lane protocols
+    - PROTO_SEL=00001 SGMII
+    - IF_WIDTH=000
+    - `0b 0 0 00000000 00001 000`
+    - `write 0x1EA0A00, 0x00000008`
+    - `write 0x1EA0B00, 0x00000008`
+17. Configure transmit equalization for C,D
+    > LNmTECR0 (0x0830 +0*100)
+    - EQ_TYPE=000 (SGMII)
+    - EQ_SGN_PREQ=1
+    - EQ_PREQ=0000
+    - EQ_SGN_POST1Q=1
+    - EQ_POST1Q=00000
+    - EQ_AMP_RED=000110 
+    - LNCTECRO offset 0A30
+    - LNDTECRO offset 0B30
+    - `0b 10000000 10000000 00000110`
+    - `write 0x1EA0A30, 00808006`
+    - `write 0x1EA0B30, 00808006`
+18. Set PLL for SGMII on receiver to PLLS
+    > LNaRGCR0 (0x0844+ 0*100)
+    - USE_SLOW_PLL=1 use PLLS
+    - BY_N_RATE_SEL=010 1G rate
+    - PTRM_VCM_SEL=00 common mode impedence
+    - `0b 10010 00000000 000000000 00000000`
+    - `write 0x1EA0A44, 24000000`
+    - `write 0x1EA0B44, 24000000`
+19. Set SGMII recommended settings
+    > LNaRGCR1 (0x0848+0*100)
+    - RX_ORD_ELECIDLE=0 no ordered idle
+    - Bit28 = 1
+    - ENTER_IDLE_FLT_SEL=100 SGMII
+    - EXIT_IDLE_FLT_SEL=011 SGMII
+    - DATA_LOST_TH_SEL=001 SGMII
+    - `0b 00010100 00110001 0000000000000000`
+    - `write 0x1EA0A48, 14310000`
+    - `write 0x1EA0B48, 14310000`
+20. Disable receive equalization gain overrides
+    > LNmRECR0 (0x0850 +0*100)
+    - **Undocumented**
+    - `write 0x1EA0A50, 00000000`
+    - `write 0x1EA0B50, 00000000`
+
+Override .pbi:
+
+```
+.pbi
+write 0x01EA1080, 0x00000000
+write 0x01EA10A0, 0x00110000
+
+write 0x01EA1824, 0x00000400
+write 0x01EA1834, 0x00000400
+
+write 0x01EA0504, 0x00000000
+write 0x01EA0508, 0x00100000
+write 0x01EA0510, 0x00003000
+write 0x01EA0514, 0x00000000
+
+write 0x01EA0A24, 0x00120000
+write 0x01EA0B24, 0x00120000
+
+write 0x01EA0A00, 0x00000008
+write 0x01EA0B00, 0x00000008
+
+write 0x01EA0A30, 0x00808006
+write 0x01EA0B30, 0x00808006
+
+write 0x01EA0A44, 0x24000000
+write 0x01EA0B44, 0x24000000
+
+write 0x01EA0A48, 0x14310000
+write 0x01EA0B48, 0x14310000
+
+write 0x01EA0A50, 0x00000000
+write 0x01EA0B50, 0x00000000
+.end
+```
+
+---
+Should be already set by PCI (shared)
+
+ - PSSFCR0/1
 
 ## mITX cases
 
