@@ -13,6 +13,7 @@
     - [Bug: `fdtfile` is not set correctly during u-boot, Retimers not set for 25/50/100G, general QSFP errors](#bug-fdtfile-is-not-set-correctly-during-u-boot-retimers-not-set-for-2550100g-general-qsfp-errors)
     - [Bug: CRC boot error](#bug-crc-boot-error)
     - [Bug: Docker/make/X doesn't work](#bug-dockermakex-doesnt-work)
+    - [u-boot shows wrong serdes lane configs](#u-boot-shows-wrong-serdes-lane-configs)
     - [Get IP address in u-boot](#get-ip-address-in-u-boot)
     - [notes on dtb/dts conversion & debugging with QEMU](#notes-on-dtbdts-conversion--debugging-with-qemu)
   - [Override default SERDES configs](#override-default-serdes-configs)
@@ -196,7 +197,7 @@ If you see lines like:
 Loading Environment from MMC... *** Warning - bad CRC, using default environment
 ```
 
-Set serdes env correctly to fix CRC boot errors:
+Set serdes env correctly to fix CRC boot errors (using your SERDES, here 17_5_2 as an example):
 
 ```sh
 => env set serdes0 17
@@ -207,7 +208,7 @@ Set serdes env correctly to fix CRC boot errors:
 
 ### Bug: Docker/make/X doesn't work
 
-Due to the custom kernel patches required until kernel 6.x, many default kernel configs are not included. For example Docker:
+Many default kernel configs needed for the lx2160a were not included and until 6.x, we need to build with custom includes. For example Docker:
 
 ```sh
 wget --no-check-certificate https://github.com/moby/moby/raw/master/contrib/check-config.sh
@@ -253,6 +254,18 @@ verify what configs are enabled:
 zcat /proc/config.gz
 ```
 
+### u-boot shows wrong serdes lane configs
+
+If you are using anything other than the pre-provided images from solid-run, you might notice in u-boot incorrect SERDES lane information:
+
+```
+DPMAC3@xgmii, DPMAC4@xgmii, DPMAC5@xgmii, DPMAC6@xgmii, DPMAC7@xgmii, DPMAC8@xgmii, DPMAC9@xgmii, DPMAC10@xgmii, DPMAC17@rgmii-id [PRIME], DPMAC18@rgmii-id
+```
+This is due to u-boot reading a device tree list, and picking up the wrong one: `u-boot/arch/arm/dts/fsl-lx2160a-cex7-8-x-x.dts`
+
+For now, I've edited this file to report the correct SERDES config. I'll try and fix the dynamic loading (as worked in LSDK20.12) later.
+
+
 ### Get IP address in u-boot
 
 Get IP address in u-boot:
@@ -285,170 +298,138 @@ Load this new dtb file in Qemu.
 
 ## Override default SERDES configs
 
-**WARNING WARNING WARNING** : Expermimental, _untested_, (mostly) undocumented!
+**WARNING WARNING WARNING** : Expermimental land! Support ends here!
 
 https://www.nxp.com/docs/en/application-note/AN13022.pdf 
 
-The above application note documents the steps to override a default SERDES config. I've chosen to try with overriding SERDES21 to the following:
+The above application note documents the steps to override a default SERDES config. I've chosen to overide SERDES17 to the following:
 
 | SRDS_PRTCL_S1 |   H/0  | G/1 | F/2 | E/3 |    D/4    |   C/5   |   B/6  |   A/7   |    PLL   |
 |:-------------:|:------:|:---:|:---:|:---:|:---------:|:-------:|:------:|:-------:|:--------:|
-| 21 (starting) | 25GE.3 | "   | "   | "   | PCIe.2 x2 | "       | 25GE.9 | 25GE.10 | FFFFSSFF |
-| 31 (target)   | 25GE.3 | "   | "   | "   | SGMII.7   | SGMII.8 | 25GE.9 | 25GE.10 | FFFFSSFF |
-
-
-
-
+| 17 (starting) | 25GE.3 | "   | "   | "   | PCIe.2 x4 | "       | " | " | FFFFSSSS |
+| 31 (target)   | 25GE.3 | "   | "   | "   | USXGMII.7   | USSGMII.8 | USXGMII.9 | USXGMII.10 | FFFFFFFF |
 
 Supposedly, the override must be done at the register level, so .pbi hex segments in RCW:
-* reserved/unmapped must be read, modified, then written - which the application note ignores ?
+* reserved/unmapped must be read, modified, then written
 
 > SerDes1 base address: 0x01EA_0000
-
+> 
 > Commands must be 32bit
 
-**WARNING**: the application note (above) has a lot of bits and registers that do not appear in the technical spec for this processor. YMMV!
+**This serdes config has been validated by NXP** and is safe to use!
 
 1. Disable all PCIe
     > PCC0 (offset 0x1080)
     - `write 0x01EA1080, 0x00000000`
-2. Enable SGMII mode for lanes C,D
-    > PCC8 (offset 0x10A0)
-    - SGMIIC_CFG=1 enable 1G channel C
-    - SGMIID_CFG=1 enable 1G channel D
-    - `0b 0 000 0 000 0 001 0 001 0000 0000 0000 0000`
-    - `write 0x01EA10A0, 0x00110000`
-3. Enable SGMII control lanes C,D
-    > SGMIIaCR1 (offset 0x1804 + a*10h for 0-7)
-    - SGMIIcCR1 offset 1804+20 = 1824
-    - SGMIIdCR1 offset 1804+30 = 1834
-    - `write 0x1EA1824, 0x00000400`
-    - `write 0x1EA1834, 0x00000400`
-7. set PLLS ref to sgmii
+2. Enable USXGMII XFI mode for lanes A-D
+    > PCC9 (offset 0x10B0)
+    - `write 0x01EA10B0, 0x99990000`
+3. Assume 161.1328125 MHz reference clock for PLLS for 10GE operation
     >PLLSCR0 (offset 0x0504)
-    - `write 0x1EA0504, 0x00000000` 
-8. Config PLLS clock
+    - `write 0x1EA0504, 0x00040000`
+4. Configure 10.3125G clock net frequency for PLLS
     >PLLSCR1 (offset 0x0508)
-    - SLOW_VCO_EN=1 slower VCO
-    - FRATE_SEL=00000 SGMII
-    - HI_BW_SEL=0
-    - CLKD_RCAL_SLW_EN=1 resister calib
-    - RTMR_BYP=0
-    - EX_DLY_SEL=00
-    - `write 0x1EA0508, 0x00100000`
-10. set PLLS clock for SGMII
+    - `write 0x1EA0508, 0x86100008`
+5. Set PLLS clock for XFI
     > PLLSCR3 (offset 0x0510)
     - SSC_SEL=00 non pci
     - SSC_SLP_OFF=0 non pci
     - Bit13=1
     - Bit12=1
     - `write 0x1EA0510, 0x00003000`
-11. Set PLLS clock for SGMII
+6. Set PLLS clock for XFP (pt 2)
     > PLLSCR4(offset 0x0514)
-    - SSC_BIAS_BST=000 recommended
-    - SSC_SLP_OFF=0 no slope (non-pci)
-    - SSC_PI_BST=0 for SGMII
-    - SSC_SAW_MAX=0 non-pci
-    - `write 0x1EA0514, 0x00000000`
-12. change clock for transmitter
-    > LNaTGCR0 (offset 824 + a*100 for 0-7)
-    - USER_SLOW_PLL = 1 transmit uses PLLS
-    - BY_N_RATE_SEL  = 010 1G rate
-    - LNCTGCR0 offset 0A24
-    - LNDTGCR0 offset 0B24
-    - `0b 1 0 010 0 00 0 00 0 0 00000000`
-    - `write 0x1EA0A24, 0x00120000`
-    - `write 0x1EA0B24, 0x00120000`
-13. Change PLL settings for SGMII
-    > LNmRGCR0 (offset 0x0844+a*100)
-    - USE_SLOW_PLL=1
-    - BY_N_RATE_SEL=010 SGMII
-    - PRTM_VCM_SEL=00 non-pcie
-15. Change protocol to SGMII for lanes C,D, disable reset chaining
-    > LNmGCR0 (offset 0800h + a*100 for 0-7 (A-H))
-    - bit28=0
-    - PORT_LN0_B=0 single-lane protocols
-    - PROTO_SEL=00001 SGMII
-    - IF_WIDTH=000
-    - `0b 0 0 00000000 00001 000`
-    - `write 0x1EA0A00, 0x00000008`
-    - `write 0x1EA0B00, 0x00000008`
-17. Configure transmit equalization for C,D
-    > LNmTECR0 (0x0830 +0*100)
-    - EQ_TYPE=000 (SGMII)
-    - EQ_SGN_PREQ=1
-    - EQ_PREQ=0000
-    - EQ_SGN_POST1Q=1
-    - EQ_POST1Q=00000
-    - EQ_AMP_RED=000110 
-    - LNCTECRO offset 0A30
-    - LNDTECRO offset 0B30
-    - `0b 10000000 10000000 00000110`
-    - `write 0x1EA0A30, 00808006`
-    - `write 0x1EA0B30, 00808006`
-18. Set PLL for SGMII on receiver to PLLS
-    > LNaRGCR0 (0x0844+ 0*100)
-    - USE_SLOW_PLL=1 use PLLS
-    - BY_N_RATE_SEL=010 1G rate
-    - PTRM_VCM_SEL=00 common mode impedence
-    - `0b 10010 00000000 000000000 00000000`
-    - `write 0x1EA0A44, 24000000`
-    - `write 0x1EA0B44, 24000000`
-19. Set SGMII recommended settings
-    > LNaRGCR1 (0x0848+0*100)
-    - RX_ORD_ELECIDLE=0 no ordered idle
-    - Bit28 = 1
-    - ENTER_IDLE_FLT_SEL=100 SGMII
-    - EXIT_IDLE_FLT_SEL=011 SGMII
-    - DATA_LOST_TH_SEL=001 SGMII
-    - `0b 00010100 00110001 0000000000000000`
-    - `write 0x1EA0A48, 14310000`
-    - `write 0x1EA0B48, 14310000`
-20. Disable receive equalization gain overrides
-    > LNmRECR0 (0x0850 +0*100)
-    - **Undocumented**
-    - `write 0x1EA0A50, 00000000`
-    - `write 0x1EA0B50, 00000000`
+    - `write 0x1EA0514, 0x00001000`
+7. change protocol for lane A-D from PCIe to XFI
+    - `write 0x1EA0800, 0x00000052`
+    - `write 0x1EA0900, 0x00000052`
+    - `write 0x1EA0A00, 0x00000052`
+    - `write 0x1EA0B00, 0x00000052`
+8. Set PLL assingment for XFI on the transmitter for lanes A-D
+    - `write 0x01EA0824,0x10000000`
+    - `write 0x01EA0924,0x10000000`
+    - `write 0x01EA0A24,0x10000000`
+    - `write 0x01EA0B24,0x10000000`
+9.  Configure the transmit equalization for lanes A-D for XFI
+    - `write 0x01EA0830,0x1080830`
+    - `write 0x01EA0930,0x1080830`
+    - `write 0x01EA0A30,0x1080830`
+    - `write 0x01EA0B30,0x1080830`
+1.  set the PLL assignment for XFI on the receiver for lanes A-D
+    - `write 0x01EA0844,0x10000000`
+    - `write 0x01EA0944,0x10000000`
+    - `write 0x01EA0A44,0x10000000`
+    - `write 0x01EA0B44,0x10000000`
+2.  Set the recommended XFI settings for lanes A-D
+    - `write 0x01EA0848,0x10000000`
+    - `write 0x01EA0948,0x10000000`
+    - `write 0x01EA0A48,0x10000000`
+    - `write 0x01EA0B48,0x10000000`
+3.  Disable the receive equalization gain overrides for lanes A-D
+    - `write 0x01EA0850,0x00000000`
+    - `write 0x01EA0950,0x00000000`
+    - `write 0x01EA0A50,0x00000000`
+    - `write 0x01EA0B50,0x00000000`
+4.  Set the recommended receive equalization gains for XFI lanes A-D
+    - `write 0x01EA0858,0x81000020`
+    - `write 0x01EA0958,0x81000020`
+    - `write 0x01EA0A58,0x81000020`
+    - `write 0x01EA0B58,0x81000020`
 
-Override .pbi:
+All summed up, paste this into `rcw/lx2160acex7/configs/lx2160a_SD1_17.rcwi, after the includes:
 
 ```
 .pbi
-write 0x01EA1080, 0x00000000
-write 0x01EA10A0, 0x00110000
+write 0x01EA1080,0x00000000
+write 0x01EA10B0,0x99990000
 
-write 0x01EA1824, 0x00000400
-write 0x01EA1834, 0x00000400
+write 0x01EA0504,0x00040000
+write 0x01EA0508,0x86100008
+write 0x01EA0510,0x00003000
+write 0x01EA0514,0x00001000
 
-write 0x01EA0504, 0x00000000
-write 0x01EA0508, 0x00100000
-write 0x01EA0510, 0x00003000
-write 0x01EA0514, 0x00000000
-
-write 0x01EA0A24, 0x00120000
-write 0x01EA0B24, 0x00120000
-
-write 0x01EA0A00, 0x00000008
-write 0x01EA0B00, 0x00000008
-
-write 0x01EA0A30, 0x00808006
-write 0x01EA0B30, 0x00808006
-
-write 0x01EA0A44, 0x24000000
-write 0x01EA0B44, 0x24000000
-
-write 0x01EA0A48, 0x14310000
-write 0x01EA0B48, 0x14310000
-
-write 0x01EA0A50, 0x00000000
-write 0x01EA0B50, 0x00000000
-.end
+write 0x01EA0800,0x00000052
+write 0x01EA0900,0x00000052
+write 0x01EA0A00,0x00000052
+write 0x01EA0B00,0x00000052
+write 0x01EA0824,0x10000000
+write 0x01EA0924,0x10000000
+write 0x01EA0A24,0x10000000
+write 0x01EA0B24,0x10000000
+write 0x01EA0830,0x10808307
+write 0x01EA0930,0x10808307
+write 0x01EA0A30,0x10808307
+write 0x01EA0B30,0x10808307
+write 0x01EA0844,0x10000000
+write 0x01EA0944,0x10000000
+write 0x01EA0A44,0x10000000
+write 0x01EA0B44,0x10000000
+write 0x01EA0848,0x10000000
+write 0x01EA0948,0x10000000
+write 0x01EA0A48,0x10000000
+write 0x01EA0B48,0x10000000
+write 0x01EA0850,0x00000000
+write 0x01EA0950,0x00000000
+write 0x01EA0A50,0x00000000
+write 0x01EA0B50,0x00000000
+write 0x01EA0858,0x81000020
+write 0x01EA0958,0x81000020
+write 0x01EA0A58,0x81000020
+write 0x01EA0B58,0x81000020
+.end 
 ```
 
----
-Should be already set by PCI (shared)
+**BUT WAIT!** *There's more!*
 
- - PSSFCR0/1
+You also need to modify `u-boot/arch/arm/cpu/armv8/fsl-layerscape/lx2160a_serdes.c` to create a new SERDES `31` (`0x1f`) with the values:
+```c
+	{0x15, {_25GE10, _25GE9, PCIE2, PCIE2, _25GE6, _25GE5, _25GE4,
+		_25GE3 } },
+	{0x16, {XFI10, XFI9, PCIE2, PCIE2, XFI6, XFI5, XFI4, XFI3 } },
+	{0x1f, {XFI10, XFI9, XFI8, XFI7, _25GE6, _25GE5, _25GE4, _25GE3 } },
+```
+then modify the SERDES value in RCWSR29 to reflect this; otherwise DPAA2 (MC-utils/restool) will not pick up the changes, and you cannot configure the new interfaces in linux userspace.
+
 
 ## mITX cases
 
@@ -478,7 +459,7 @@ Takachi EXH • EXHF19-8-18 (63mm internal height)
 
 [LX2160A datasheet](https://www.mouser.cn/datasheet/2/302/LX2160A-1919583.pdf) Section 5, Thermal
 
-Package 40x40mm
+Package 40x40mm (30x30 effective)
 
 Substrate #3-2-3 stackup, 600um core
 
