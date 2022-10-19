@@ -17,7 +17,9 @@
     - [Get IP address in u-boot](#get-ip-address-in-u-boot)
     - [notes on dtb/dts conversion & debugging with QEMU](#notes-on-dtbdts-conversion--debugging-with-qemu)
   - [Override default SERDES configs](#override-default-serdes-configs)
+    - [Not working yet](#not-working-yet)
   - [mITX cases](#mitx-cases)
+    - [Other potentially passive ITX cases worth considering](#other-potentially-passive-itx-cases-worth-considering)
   - [Thermal Calculations](#thermal-calculations)
 
 <br clear="right">
@@ -310,10 +312,9 @@ The above application note documents the steps to override a default SERDES conf
 | 31 (target)   | 25GE.3 | "   | "   | "   | USXGMII.7   | USSGMII.8 | USXGMII.9 | USXGMII.10 | FFFFFFFF |
 
 Supposedly, the override must be done at the register level, so .pbi hex segments in RCW:
-* reserved/unmapped must be read, modified, then written
 
 > SerDes1 base address: 0x01EA_0000
-> 
+
 > Commands must be 32bit
 
 **This serdes config has been validated by NXP** and is safe to use!
@@ -355,22 +356,22 @@ Supposedly, the override must be done at the register level, so .pbi hex segment
     - `write 0x01EA0930,0x1080830`
     - `write 0x01EA0A30,0x1080830`
     - `write 0x01EA0B30,0x1080830`
-1.  set the PLL assignment for XFI on the receiver for lanes A-D
+10. set the PLL assignment for XFI on the receiver for lanes A-D
     - `write 0x01EA0844,0x10000000`
     - `write 0x01EA0944,0x10000000`
     - `write 0x01EA0A44,0x10000000`
     - `write 0x01EA0B44,0x10000000`
-2.  Set the recommended XFI settings for lanes A-D
+11. Set the recommended XFI settings for lanes A-D
     - `write 0x01EA0848,0x10000000`
     - `write 0x01EA0948,0x10000000`
     - `write 0x01EA0A48,0x10000000`
     - `write 0x01EA0B48,0x10000000`
-3.  Disable the receive equalization gain overrides for lanes A-D
+12. Disable the receive equalization gain overrides for lanes A-D
     - `write 0x01EA0850,0x00000000`
     - `write 0x01EA0950,0x00000000`
     - `write 0x01EA0A50,0x00000000`
     - `write 0x01EA0B50,0x00000000`
-4.  Set the recommended receive equalization gains for XFI lanes A-D
+13. Set the recommended receive equalization gains for XFI lanes A-D
     - `write 0x01EA0858,0x81000020`
     - `write 0x01EA0958,0x81000020`
     - `write 0x01EA0A58,0x81000020`
@@ -378,7 +379,16 @@ Supposedly, the override must be done at the register level, so .pbi hex segment
 
 All summed up, paste this into `rcw/lx2160acex7/configs/lx2160a_SD1_17.rcwi, after the includes:
 
-```
+(notice: added REF_CLK flags as the solid-run implementation has swapped the PLLF & PLLS)
+
+```c
+SRDS_PRTCL_S1=17
+#include <configs/lx2160a_cex7_hc_sd1_lanes_e_f.rcwi>
+#include <configs/lx2160a_cex7_hc_sd1_lanes_g_h.rcwi>
+
+SRDS_INTRA_REF_CLK_S1=1 /* PLLF used for PLLS */
+SRDS_PLL_REF_CLK_SEL_S1=2
+
 .pbi
 write 0x01EA1080,0x00000000
 write 0x01EA10B0,0x99990000
@@ -422,23 +432,44 @@ write 0x01EA0B58,0x81000020
 **BUT WAIT!** *There's more!*
 
 You also need to modify `u-boot/arch/arm/cpu/armv8/fsl-layerscape/lx2160a_serdes.c` to create a new SERDES `31` (`0x1f`) with the values:
+
 ```c
-	{0x15, {_25GE10, _25GE9, PCIE2, PCIE2, _25GE6, _25GE5, _25GE4,
-		_25GE3 } },
-	{0x16, {XFI10, XFI9, PCIE2, PCIE2, XFI6, XFI5, XFI4, XFI3 } },
-	{0x1f, {XFI10, XFI9, XFI8, XFI7, _25GE6, _25GE5, _25GE4, _25GE3 } },
+{0x15, {_25GE10, _25GE9, PCIE2, PCIE2, _25GE6, _25GE5, _25GE4,
+_25GE3 } },
+{0x16, {XFI10, XFI9, PCIE2, PCIE2, XFI6, XFI5, XFI4, XFI3 } },
+{0x1f, {XFI10, XFI9, XFI8, XFI7, _25GE6, _25GE5, _25GE4, _25GE3 } },
 ```
-then modify the SERDES value in RCWSR29 to reflect this; otherwise DPAA2 (MC-utils/restool) will not pick up the changes, and you cannot configure the new interfaces in linux userspace.
+
+then modify the SERDES value in RCWSR29 to reflect this, via _magic_ and **undocumented** override register: `0x7_00100170`!
+
+(in `eth_lx2160acex7.c`, after retimers are enabled in the board-specific folder of u-boot)
+
+```c
+u32 srds_raw;
+srds_raw = in_le32(0x1E00170); // should read 0x08b10000, or SD1=17, SD2=5, SD3=2
+printf ("rcw_status = 0x%x, srds_s1 = 0x%x (%i), address_srds: 0x%x, RAW=0x%x\n",  rcw_status, srds_s1, srds_s1, &gur->rcwsr[28], srds_raw);
+// write new SD1=31
+out_le32(0x700100170, 0x08BF0000); // write '31' to SERDES1 magic register
+srds_raw = in_le32(0x1E00170);
+printf ("srds_raw (after) = 0x%x\n", srds_raw);
+```
+
+### Not working yet
+Still waiting on response from NXP on how to set lane speeds for the new serdes via restool- to be updated. Currently, the override correctly sets the new lane behavior, but we are unable to configure the DPAA2 objects without help from restool :-/
 
 
 ## mITX cases
 
-- mITX is 170x170 outer , mounting holes 157.48 x 154.95
+> mITX is 170x170 outer , mounting holes 157.48 x 154.95
 
 I purchased this one:
 <https://www.fischerelektronik.de/web_fischer/en_GB/cases/M1.08/Heat%20dissipating%20case/$catalogue/fischerData/PG/EMB175/search.xhtml>
 
 ![EMB175](images/emb175.jpg)
+
+The carrier board connects via M3x40mm screws, and the chip die is bonded to the top of the case via 15mm copper block where the stock (*loud*) heatsink used to be. With a bit of thermal grease its totally passive, and pretty neat*.
+
+### Other potentially passive ITX cases worth considering
 
 <http://www.isg.com.tw/product_speclist.php?typ=IPC%20Chassis&ser=Mini-ITX%20Enclosure>
 1 mini, others hot-swap, tower
@@ -446,7 +477,7 @@ I purchased this one:
 <https://www.fischerelektronik.de/web_fischer/en_GB/cases/M1/Cases/index.xhtml>
 Industrial supplier, BTO - user stockist?
 
-- this manufacturer supplies cases similar to many OEMs (Solid-Run, SuperMico, etc)
+- this manufacturer seems to supply cases similar to many OEMs (SuperMico, etc)
 - supplies many OEM heatsinks of various dimmensions
 
 <https://www.takachi-enclosure.com/cat/heatsink_enclosures>
