@@ -10,12 +10,13 @@
     - [Finish install](#finish-install)
     - [make dpmac auto-configure on boot](#make-dpmac-auto-configure-on-boot)
   - [Gotchas, Fixes, headaches](#gotchas-fixes-headaches)
+    - [Bug: Rebooting with the serial cable attached causes u-boot to hang, fans running on max](#bug-rebooting-with-the-serial-cable-attached-causes-u-boot-to-hang-fans-running-on-max)
     - [Bug: `fdtfile` is not set correctly during u-boot, Retimers not set for 25/50/100G, general QSFP errors](#bug-fdtfile-is-not-set-correctly-during-u-boot-retimers-not-set-for-2550100g-general-qsfp-errors)
     - [Bug: CRC boot error](#bug-crc-boot-error)
     - [Bug: Docker/make/X doesn't work](#bug-dockermakex-doesnt-work)
     - [u-boot shows wrong serdes lane configs](#u-boot-shows-wrong-serdes-lane-configs)
     - [Get IP address in u-boot](#get-ip-address-in-u-boot)
-    - [notes on dtb/dts conversion & debugging with QEMU](#notes-on-dtbdts-conversion--debugging-with-qemu)
+    - [notes on dtb/dts conversion \& debugging with QEMU](#notes-on-dtbdts-conversion--debugging-with-qemu)
   - [Override default SERDES configs](#override-default-serdes-configs)
     - [Not working yet](#not-working-yet)
   - [mITX cases](#mitx-cases)
@@ -149,6 +150,17 @@ systemctl enable --now dpmac.service
 
 Solid-Run provides a [u-boot build repo](https://github.com/SolidRun/lx2160a_build), but this is only used for producing the 8_5_2 serdes prebuilt images for getting started. No testing of other configs seems to be done unfortunately. You might be able to get support from #solidrun [on discord](https://t.co/MaJevmjlC5), but the only active devs there are interested in desktop GPU use of this board.
 
+### Bug: Rebooting with the serial cable attached causes u-boot to hang, fans running on max
+
+This is caused by the serial buffer not being completely empty on reboot. A quite annoying bug, especially if you use this device as a router or embedded device. This can be fixed in several ways:
+
+* cold cycle the device with the cable and power disconnected, allowing the buffer to drain/erase.
+* Change the autoboot interrupt behavior in u-boot to be a specific key(s)
+  ```
+  #define CONFIG_AUTOBOOT_KEYED
+  #define CONFIG_AUTOBOOT_PROMPT "autoboot in %d seconds\n", bootdelay
+  #define CONFIG_AUTOBOOT_STOP_STR "f"
+  ```
 ### Bug: `fdtfile` is not set correctly during u-boot, Retimers not set for 25/50/100G, general QSFP errors
 
 If during testing LSDK21.08 doesn't set `fdtfile` correctly, ie `fls-layerscape-lx2160a`, or the retimers for the QSFP serdes are not being setup, the problem is in u-boot late-init (`u-boot/board/solidrun/lx2160a/eth_lx2160acex7.c`), which is responsible for setting the env `fdtfile`, among other things:
