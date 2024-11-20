@@ -25,19 +25,33 @@
 
 <br clear="right">
 
-## Resources
+## About
+
+This is a collection of helpful information for setting up and using the ClearFog CX / Honeycomb LX2 from
+[Solidrun](https://www.solid-run.com/embedded-networking/nxp-lx2160a-family/cex7-lx2160/#carrier-boards).
+This mini-ITX board is marketed as a desktop for ARM developers working in graphical environments,
+however this guide is focused on leveraging the *considerable* networking capabilities of the CPU. Finally,
+the only difference between the ClearFox CX and the Honeycomb LX2 is the presence of a QSFP connector.
 
 <img src="images/newboard_small.jpg"  width="400"/>  <img src="images/specs_comparison.png"  width="413"/>
 
+## Web Resources
+
+Below are related guides and information for the Honeycomb/Clearfog boards:
+
 - [Solid-Run ClearFog CX LX2160A Quick Start Guide](https://solidrun.atlassian.net/wiki/spaces/developer/pages/197494288/HoneyComb+LX2+ClearFog+CX+LX2+Quick+Start+Guide) (sometimes outdated)
-- [SolidRun lx2160a u-boot repo](https://github.com/SolidRun/lx2160a_build) (only tested for 8_5_2)
+- [SolidRun lx2160a u-boot repo](https://github.com/SolidRun/lx2160a_build)
 - [Wooty-B's collection of fixes/info from discord](https://github.com/Wooty-B/LX2K_Guide)
 - [Solid-Run Discord](https://t.co/MaJevmjlC5)
 
 ### Quickstarting
 
-Start with provided ubuntu images. By default they are SERDES (serial-deserializer)8_5_2, where SD1=8, SD2=5, SD3=2.
-This enables QSFP28 at 10Gx4 (with octopus) and the 4xSFP+ ports.
+Start with [provided ubuntu images](https://images.solid-run.com/LX2k/lx2160a_build/). By default they are SERDES
+(serial-deserializer) `18_5_2`, where SD1=18, SD2=5, SD3=2.
+This enables QSFP28 at 10Gx4* (with octopus) and the 4xSFP+ ports at 10Gx4.
+
+*In 2024, the defualt build target switched from `8_5_2` (also 8x10G), thanks to upstream patches that finally enabled runtime
+switching of port speeds. There are some caveats however - more on that later.*
 
 SERDES lanes map H-E (lane0-3) to QSFP, and the rest to the 4x cage. See page 1912 of the lx2160a Reference Manual.
 
@@ -77,7 +91,7 @@ alternatively write to eMMC
 
 ### Finish install
 
-Delete and install to disk (NVME)
+##### Delete and install to disk (NVME)
 
 ```sh
 fdisk /dev/nvme0n1
@@ -87,6 +101,7 @@ n # new
 p # primary
 1 # default
 First Sector: 131072
+Last Sector: # default whole drive if you like, or smaller
 Remove Signature? Yes
 w # write
 
@@ -94,16 +109,35 @@ w # write
 resize2fs /dev/nvme0n1p1
 ```
 
-Connect onboard nic to DHCP network
+##### Delete and install to disk (eMMC)
+
+```sh
+fdisk /dev/mmcblk1
+# list with p
+d # delete partition1
+n # new 
+p # primary
+1 # default
+First Sector: 131072
+Last Sector: # default whole drive if you like, or smaller
+Remove Signature? No
+w # write
+
+# use new partition as disk
+resize2fs /dev/mmcblk1p1
+```
+
+Connect onboard nic to DHCP network:
 
 ```sh
 dhclient # (eth0/dpmac.17 should show active IP)
+# dhclient -r to renew
 ```
 
-Update system time (here using swiss ntp, ymmv)
+Update system time & write to hw clock (here using swiss ntp, ymmv):
 
 ```sh
-ntpdate ch.pool.ntp.org
+ntpdate -buv ch.pool.ntp.org # flags -bu for time more than 1000s out of spec, unprivileged ports
 hwclock -w
 ```
 
@@ -115,9 +149,11 @@ unminimize
 
 ### make dpmac auto-configure on boot
 
-For using any SFP ports, you can either add them to .dsti configs, or use restool wrappers to configure them once linux is running. Here is a one-shot service for brining up 25G QSFP on Lane0/H SerDes 17 (see above guide from Wooty):
+For using any SFP ports, you can either add them to .dsti configs, or use restool wrappers to configure
+them once linux is running. Here is an example one-shot service for brining up 25G QSFP on Lane0/H SerDes 17
+(see above guide from Wooty):
 
-`nano /usr/lib/systemd/system/dpmac.service`
+`/usr/lib/systemd/system/dpmac.service`
 
 ```desktop
 [Unit]
@@ -146,24 +182,32 @@ systemctl daemon-reload
 systemctl enable --now dpmac.service
 ```
 
-## Gotchas, Fixes, headaches
+## Gotchas, Fixes, Headaches
 
-Solid-Run provides a [u-boot build repo](https://github.com/SolidRun/lx2160a_build), but this is only used for producing the 8_5_2 serdes prebuilt images for getting started. No testing of other configs seems to be done unfortunately. You might be able to get support from #solidrun [on discord](https://t.co/MaJevmjlC5), but the only active devs there are interested in desktop GPU use of this board.
+Solid-Run provides a [u-boot build repo](https://github.com/SolidRun/lx2160a_build),
+which is used for producing the prebuilt images for getting started. No testing of other configs
+seems to be done as of 2024. You might be able to get support from #solidrun [on discord](https://t.co/MaJevmjlC5),
+but most devs are using the [uefi bootloader](https://images.solid-run.com/LX2k/lx2160a_uefi), and not u-boot.
 
 ### Bug: Rebooting with the serial cable attached causes u-boot to hang, fans running on max
 
 This is caused by the serial buffer not being completely empty on reboot. A quite annoying bug, especially if you use this device as a router or embedded device. This can be fixed in several ways:
 
-* cold cycle the device with the cable and power disconnected, allowing the buffer to drain/erase.
-* Change the autoboot interrupt behavior in u-boot to be a specific key(s)
-  ```
+- cold cycle the device with the cable and power disconnected, allowing the buffer to drain/erase.
+- Change the autoboot interrupt behavior in u-boot to be a specific key(s)
+
+  ```sh
   #define CONFIG_AUTOBOOT_KEYED
   #define CONFIG_AUTOBOOT_PROMPT "autoboot in %d seconds\n", bootdelay
   #define CONFIG_AUTOBOOT_STOP_STR "f"
   ```
+
 ### Bug: `fdtfile` is not set correctly during u-boot, Retimers not set for 25/50/100G, general QSFP errors
 
-If during testing LSDK21.08 doesn't set `fdtfile` correctly, ie `fls-layerscape-lx2160a`, or the retimers for the QSFP serdes are not being setup, the problem is in u-boot late-init (`u-boot/board/solidrun/lx2160a/eth_lx2160acex7.c`), which is responsible for setting the env `fdtfile`, among other things:
+If during testing u-boot doesn't set `fdtfile` correctly, ie you see `fls-layerscape-lx2160a` during boot,
+or the retimers for the QSFP serdes are not being setup, the problem is in u-boot late-init
+(`u-boot/board/solidrun/lx2160a/eth_lx2160acex7.c`), which is responsible for setting the env `fdtfile`,
+among other things:
 
 ```C
 int fsl_board_late_init(void) {
@@ -184,9 +228,10 @@ You can see a few things above:
 
 1. If `fdtfile` is set before `fsl_board_late_init()`, the retimers will not be enabled.
 2. If your serdes protocol is not supported (eg not in the struct below), retimers will not be set
-3. There is no notification of these failure cases
+3. *There is no notification of these failure cases*
 
-Problem 2 & 3 causes u-boot to leave `fdtfile` unset, which it later attemptx to load some default based on `${SOC}-${BOARD}.dtb`, where `SOC=fsl-layerscape`, `BOARD=lx2160a`. Fix this by adding your missing serdes:
+Problem 2 & 3 causes u-boot to leave `fdtfile` unset, which it later attempts to load some default based on
+`${SOC}-${BOARD}.dtb`, where `SOC=fsl-layerscape`, `BOARD=lx2160a`. Fix this by adding your missing serdes:
 
 ```diff
 +++ b/board/solidrun/lx2160a/eth_lx2160acex7.c
@@ -199,7 +244,7 @@ Problem 2 & 3 causes u-boot to leave `fdtfile` unset, which it later attemptx to
         {2, 0, false},
 ```
 
-Add serdes 21 to the valid serdes list (which needs retimers)
+Here I've added serdes 21 to the valid serdes list (which needs retimers)
 
 ### Bug: CRC boot error
 
@@ -222,9 +267,11 @@ Set serdes env correctly to fix CRC boot errors (using your SERDES, here 17_5_2 
 
 ### Bug: Docker/make/X doesn't work
 
-Many default kernel configs needed for the lx2160a were not included and until 6.x, we need to build with custom includes. For example Docker:
+Many default kernel configs needed for the lx2160a were not included and until 6.x, so we need to build with
+custom includes. For example Docker:
 
 ```sh
+# from a running lx2160a node check what you are missing:
 wget --no-check-certificate https://github.com/moby/moby/raw/master/contrib/check-config.sh
 chmod +x check-config.sh
 $ ./check-config.sh
@@ -260,7 +307,8 @@ Generally Necessary:
 - CONFIG_CGROUP_BPF: missing
 ```
 
-You can enable missing configs for your software (docker in this case) by adding them to `/configs/linux/ls2k_addition.config` & rebuilding
+You can enable the above missing configs for your software (docker in this case) by adding them to
+`/configs/linux/ls2k_addition.config` & rebuilding
 
 verify what configs are enabled:
 
@@ -270,15 +318,26 @@ zcat /proc/config.gz
 
 ### u-boot shows wrong serdes lane configs
 
+> Potentially fixed in `develop-ls-5.15.71-2.2.0` branch
+
 If you are using anything other than the pre-provided images from solid-run, you might notice in u-boot incorrect SERDES lane information:
 
 ```
 DPMAC3@xgmii, DPMAC4@xgmii, DPMAC5@xgmii, DPMAC6@xgmii, DPMAC7@xgmii, DPMAC8@xgmii, DPMAC9@xgmii, DPMAC10@xgmii, DPMAC17@rgmii-id [PRIME], DPMAC18@rgmii-id
 ```
+
 This is due to u-boot reading a device tree list, and picking up the wrong one: `u-boot/arch/arm/dts/fsl-lx2160a-cex7-8-x-x.dts`
 
 For now, I've edited this file to report the correct SERDES config. I'll try and fix the dynamic loading (as worked in LSDK20.12) later.
 
+### Change u-boot default boot order
+
+> The default boot order is `boot_targets=usb0 mmc0 mmc1 scsi0 scsi1 scsi2 scsi3 pxe dhcp`
+
+This can be changed in two ways:
+
+1. Edit `BOOT_TARGET_DEVICES` variable in `u-boot/include/configs/lx2160acex7.h`
+2. During boot time, edit `boot_targets` variable to make persistent:
 
 ### Get IP address in u-boot
 
@@ -314,7 +373,7 @@ Load this new dtb file in Qemu.
 
 **WARNING WARNING WARNING** : Expermimental land! Support ends here!
 
-https://www.nxp.com/docs/en/application-note/AN13022.pdf 
+<https://www.nxp.com/docs/en/application-note/AN13022.pdf>
 
 The above application note documents the steps to override a default SERDES config. I've chosen to overide SERDES17 to the following:
 
@@ -363,7 +422,7 @@ Supposedly, the override must be done at the register level, so .pbi hex segment
     - `write 0x01EA0924,0x10000000`
     - `write 0x01EA0A24,0x10000000`
     - `write 0x01EA0B24,0x10000000`
-9.  Configure the transmit equalization for lanes A-D for XFI
+9. Configure the transmit equalization for lanes A-D for XFI
     - `write 0x01EA0830,0x1080830`
     - `write 0x01EA0930,0x1080830`
     - `write 0x01EA0A30,0x1080830`
@@ -452,7 +511,7 @@ _25GE3 } },
 {0x1f, {XFI10, XFI9, XFI8, XFI7, _25GE6, _25GE5, _25GE4, _25GE3 } },
 ```
 
-then modify the SERDES value in RCWSR29 to reflect this, via _magic_ and **undocumented** override register: `0x7_00100170`!
+then modify the SERDES value in RCWSR29 to reflect this, via *magic* and **undocumented** override register: `0x7_00100170`!
 
 (in `eth_lx2160acex7.c`, after retimers are enabled in the board-specific folder of u-boot)
 
@@ -467,8 +526,8 @@ printf ("srds_raw (after) = 0x%x\n", srds_raw);
 ```
 
 ### Not working yet
-Still waiting on response from NXP on how to set lane speeds for the new serdes via restool- to be updated. Currently, the override correctly sets the new lane behavior, but we are unable to configure the DPAA2 objects without help from restool :-/
 
+Still waiting on response from NXP on how to set lane speeds for the new serdes via restool- to be updated. Currently, the override correctly sets the new lane behavior, but we are unable to configure the DPAA2 objects without help from restool :-/
 
 ## mITX cases
 
